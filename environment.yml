@@ -1,0 +1,19 @@
+name: isimip3b_temps
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - xarray>=2024.1
+  - netcdf4
+  - h5netcdf
+  - numpy
+  - pandas
+  - scipy
+  - dask
+  - distributed
+  - matplotlib
+  - tqdm
+  - jupyter
+  - ipykernel
+  - pip
