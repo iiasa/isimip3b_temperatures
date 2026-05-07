@@ -1,18 +1,18 @@
 """
-isimip3b_anomalies.py — Main processing script
+isimip3b_anomalies.py -- Main processing script
 ===============================================
 Computes yearly global-mean temperature anomalies (relative to 1850-1900)
-for all ISIMIP3b bias-adjusted models and SSP scenarios.
+for all ISIMIP3b bias-adjusted models and scenarios.
 
-Follows the method from cmip_temperatures (Hauser 2021):
-  https://github.com/mathause/cmip_temperatures
+Creator : Dr. Andre Nakhavali, IIASA (nakhavali@iiasa.ac.at)
+Created : 2026
 
 Usage:
   python isimip3b_anomalies.py              # process all models & scenarios
   python isimip3b_anomalies.py --dry-run   # list files only, no computation
 
 Output (in output/):
-  isimip3b_tas_anomalies_yearly.csv   all models × scenarios, long format
+  isimip3b_tas_anomalies_yearly.csv   all models x scenarios, long format
   isimip3b_tas_mmm_yearly.csv         multi-model mean per scenario per year
   by_model/<model>_<scenario>_anomalies.csv
 """

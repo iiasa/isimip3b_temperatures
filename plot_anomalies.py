@@ -1,6 +1,9 @@
 """
-plot_anomalies.py — Diagnostic visualisation of yearly anomalies
-================================================================
+plot_anomalies.py -- Diagnostic visualisation of yearly anomalies
+=================================================================
+Creator : Dr. Andre Nakhavali, IIASA (nakhavali@iiasa.ac.at)
+Created : 2026
+
 Reads the CSVs produced by isimip3b_anomalies.py and generates:
   1. Per-scenario spaghetti plot (one line per model) + multi-model mean
   2. Combined 4-panel figure (one panel per SSP)

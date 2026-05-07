@@ -1,6 +1,10 @@
 # ISIMIP3b Temperature Anomalies
 
-Yearly global-mean surface temperature anomalies for ISIMIP3b bias-adjusted climate models, adapted from [cmip_temperatures](https://github.com/mathause/cmip_temperatures) (Hauser, 2021).
+**Creator:** Dr. Andre Nakhavali, IIASA (nakhavali@iiasa.ac.at)  
+**Institution:** International Institute for Applied Systems Analysis (IIASA)  
+**Created:** 2026
+
+Yearly global-mean surface temperature anomalies for ISIMIP3b bias-adjusted climate models.
 
 ## Models
 
@@ -78,8 +82,5 @@ python plot_anomalies.py
 ```
 
 ## Reference
-
-Hauser, M. (2021). *Global mean temperature anomalies for CMIP5 and CMIP6*.  
-Zenodo. https://doi.org/10.5281/zenodo.5532894
 
 ISIMIP3b protocol: https://www.isimip.org/protocol/3b/

@@ -1,15 +1,15 @@
 """
-utils.py — Helper functions for ISIMIP3b temperature anomaly calculations
-=========================================================================
-Follows the method of Hauser (2021) cmip_temperatures:
-  https://github.com/mathause/cmip_temperatures
+utils.py -- Helper functions for ISIMIP3b temperature anomaly calculations
+==========================================================================
+Creator : Dr. Andre Nakhavali, IIASA (nakhavali@iiasa.ac.at)
+Created : 2026
 
-Method per model × scenario:
+Method per model x scenario:
   1. Discover tas NetCDF files (historical + scenario)
   2. Open with xarray + dask (lazy loading)
   3. Cos-latitude area-weighted global mean
   4. Annual resampling (all days weighted equally)
-  5. Subtract 1850-1900 reference mean → anomaly [K]
+  5. Subtract 1850-1900 reference mean -> anomaly [K]
 """
 
 import glob
