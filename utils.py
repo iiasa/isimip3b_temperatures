@@ -4,137 +4,115 @@ utils.py -- Helper functions for ISIMIP3b temperature anomaly calculations
 Creator : Dr. Andre Nakhavali, IIASA (nakhavali@iiasa.ac.at)
 Created : 2026
 
-Method per model x scenario:
-  1. Discover tas NetCDF files (historical + scenario)
-  2. Open with xarray + dask (lazy loading)
-  3. Cos-latitude area-weighted global mean
-  4. Annual resampling (all days weighted equally)
-  5. Subtract 1850-1900 reference mean -> anomaly [K]
+Optimized for high-performance processing of ISIMIP3b NetCDF files over 
+network drives using raw netCDF4 and multiprocessing.
 """
 
 import glob
 import logging
 import os
-from pathlib import Path
-
+import concurrent.futures
 import numpy as np
 import pandas as pd
-import xarray as xr
+import netCDF4 as nc
 
 logger = logging.getLogger(__name__)
 
+def find_files(input_root, scenario, model_dir, pattern_template="*_{variable}_global_daily_*.nc", variable="tas"):
+    pattern = os.path.join(input_root, scenario, model_dir, pattern_template.format(variable=variable))
+    return sorted(glob.glob(pattern))
 
-# ── File discovery ─────────────────────────────────────────────────────────────
+def _process_single_file_raw(fpath, variable, weights):
+    """Worker function to process one file using netCDF4."""
+    with nc.Dataset(fpath, "r") as ds:
+        var_obj = ds.variables[variable]
+        n_lon = var_obj.shape[2]
+        
+        # Read full data (faster for 10yr files if network allows)
+        data = var_obj[:]
+        
+        # Area-weighted mean
+        gm = np.einsum("tlf,l->t", data, weights) / n_lon
+        
+        # Time conversion
+        time_var = ds.variables["time"]
+        times = nc.num2date(time_var[:], units=time_var.units, calendar=time_var.calendar)
+        
+    return pd.Series(gm, index=pd.DatetimeIndex([str(t) for t in times]))
 
-def find_files(input_root: str, scenario: str, model_dir: str,
-               variable: str = "tas") -> list[str]:
-    """Return sorted list of NetCDF files matching a model/scenario/variable."""
-    pattern = os.path.join(
-        input_root, scenario, model_dir,
-        f"*_{variable}_global_daily_*.nc"
-    )
-    files = sorted(glob.glob(pattern))
-    if not files:
-        logger.warning("No files found: %s", pattern)
-    else:
-        logger.debug("Found %d files for %s/%s/%s", len(files), model_dir, scenario, variable)
-    return files
+def _files_to_annual_gmean(files, variable, test_years=None):
+    if test_years:
+        files = _filter_files_by_years(files, *test_years)
+        if not files: return pd.Series(dtype=float)
 
+    # Get weights
+    with nc.Dataset(files[0], "r") as ds0:
+        lat = ds0.variables["lat"][:]
+        weights = np.cos(np.deg2rad(lat))
+        weights = weights / weights.sum()
 
-# ── Data loading ───────────────────────────────────────────────────────────────
+    all_series = []
+    n_workers = 4
+    logger.info(f"  Processing {len(files)} files in parallel ({n_workers} workers, raw netCDF4 mode)...")
+    
+    with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
+        futures = {executor.submit(_process_single_file_raw, f, variable, weights): f for f in files}
+        
+        count = 0
+        for future in concurrent.futures.as_completed(futures):
+            count += 1
+            fpath = futures[future]
+            try:
+                res = future.result()
+                all_series.append(res)
+                logger.info(f"    [{count}/{len(files)}] Finished {os.path.basename(fpath)}")
+            except Exception as e:
+                logger.error(f"    [{count}/{len(files)}] Error in {os.path.basename(fpath)}: {e}")
 
-def _open_mf(files: list[str], variable: str, chunk_days: int) -> xr.DataArray:
-    """Open and concatenate multiple NetCDF files into one DataArray."""
-    ds = xr.open_mfdataset(
-        files,
-        combine="by_coords",
-        chunks={"time": chunk_days},
-        engine="netcdf4",
-        data_vars="minimal",
-        coords="minimal",
-        compat="override",
-    )
-    return ds[variable]
+    if not all_series: return pd.Series(dtype=float)
+    
+    daily = pd.concat(all_series).sort_index()
+    
+    if test_years:
+        daily = daily[(daily.index.year >= test_years[0]) & (daily.index.year <= test_years[1])]
 
+    annual = daily.resample("YE").mean()
+    annual.index = annual.index.year
+    return annual
 
-def load_hist_plus_scenario(hist_files: list[str], scen_files: list[str],
-                             variable: str = "tas",
-                             chunk_days: int = 3650) -> xr.DataArray:
-    """Load historical + scenario files concatenated along time."""
-    return _open_mf(hist_files + scen_files, variable, chunk_days)
+def _filter_files_by_years(files, y_start, y_end):
+    kept = []
+    for f in files:
+        base = os.path.basename(f)
+        parts = base.replace(".nc4", "").replace(".nc", "").split("_")
+        try:
+            f_end, f_start = int(parts[-1]), int(parts[-2])
+            if f_end >= y_start and f_start <= y_end: kept.append(f)
+        except: kept.append(f)
+    return kept
 
+def load_hist_plus_scenario(hist_files, scen_files, variable, test_years=None, **kwargs):
+    return _files_to_annual_gmean(hist_files + scen_files, variable, test_years)
 
-def load_scenario_only(files: list[str], variable: str = "tas",
-                       chunk_days: int = 3650) -> xr.DataArray:
-    """Load a standalone scenario (e.g. piControl) without historical concat."""
-    return _open_mf(files, variable, chunk_days)
+def load_scenario_only(files, variable, test_years=None, **kwargs):
+    return _files_to_annual_gmean(files, variable, test_years)
 
+def compute_anomaly(annual, ref_start, ref_end):
+    ref_mask = (annual.index >= ref_start) & (annual.index <= ref_end)
+    if not any(ref_mask):
+        raise ValueError(f"No data for reference period {ref_start}-{ref_end}")
+    ref_mean = annual[ref_mask].mean()
+    return annual - ref_mean
 
-# ── Spatial aggregation ────────────────────────────────────────────────────────
-
-def _lat_name(da: xr.DataArray) -> str:
-    for c in ["lat", "latitude", "nav_lat"]:
-        if c in da.dims or c in da.coords:
-            return c
-    raise ValueError(f"Latitude coordinate not found in: {list(da.dims)}")
-
-
-def _lon_name(da: xr.DataArray) -> str:
-    for c in ["lon", "longitude", "nav_lon"]:
-        if c in da.dims or c in da.coords:
-            return c
-    raise ValueError(f"Longitude coordinate not found in: {list(da.dims)}")
-
-
-def area_weighted_global_mean(da: xr.DataArray) -> xr.DataArray:
-    """
-    Compute cos(latitude)-weighted global mean.
-    ISIMIP3b bias-adjusted files do not include areacella, so cos(lat)
-    is used as the area proxy — identical to the cmip_temperatures fallback.
-    """
-    lat = _lat_name(da)
-    lon = _lon_name(da)
-    weights = np.cos(np.deg2rad(da[lat]))
-    weights.name = "weights"
-    return da.weighted(weights).mean([lat, lon])
-
-
-# ── Temporal aggregation ───────────────────────────────────────────────────────
-
-def annual_mean(da: xr.DataArray) -> xr.DataArray:
-    """
-    Resample daily global-mean to annual means (calendar year).
-    All days within a year are weighted equally, consistent with
-    the cmip_temperatures methodology.
-    Returns a DataArray with integer 'year' coordinate.
-    """
-    da_ann = da.resample(time="YE").mean()
-    da_ann["time"] = da_ann["time"].dt.year
-    return da_ann.rename({"time": "year"})
-
-
-# ── Anomaly calculation ────────────────────────────────────────────────────────
-
-def compute_anomaly(da_annual: xr.DataArray,
-                    ref_start: int, ref_end: int) -> xr.DataArray:
-    """
-    Subtract the mean over [ref_start, ref_end] from each annual value.
-    Returns anomaly in Kelvin (same unit as tas).
-    """
-    ref_mean = da_annual.sel(year=slice(ref_start, ref_end)).mean("year")
-    anomaly = da_annual - ref_mean
-    anomaly.attrs.update({"units": "K",
-                          "reference_period": f"{ref_start}-{ref_end}",
-                          "long_name": "Annual global-mean temperature anomaly"})
-    return anomaly
-
-
-# ── Output formatting ──────────────────────────────────────────────────────────
-
-def to_dataframe(da_anomaly: xr.DataArray,
-                 model: str, scenario: str) -> pd.DataFrame:
-    """Convert annual anomaly DataArray to a tidy long-format DataFrame."""
-    df = da_anomaly.to_dataframe(name="tas_anomaly_K").reset_index()
+def to_dataframe(anomaly, model, scenario, hist_end=2014):
+    df = anomaly.reset_index()
+    df.columns = ["year", "tas_anomaly_K"]
     df.insert(0, "model", model)
     df.insert(1, "scenario", scenario)
-    return df[["model", "scenario", "year", "tas_anomaly_K"]]
+    
+    if scenario == "piControl":
+        df.insert(2, "experiment_part", "piControl")
+    else:
+        df.insert(2, "experiment_part", df["year"].apply(lambda y: "historical" if y <= hist_end else "future"))
+        
+    return df

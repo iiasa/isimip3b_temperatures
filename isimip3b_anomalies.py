@@ -10,6 +10,7 @@ Created : 2026
 Usage:
   python isimip3b_anomalies.py              # process all models & scenarios
   python isimip3b_anomalies.py --dry-run   # list files only, no computation
+  python isimip3b_anomalies.py --test      # quick 10-year test (1 model/scenario)
 
 Output (in output/):
   isimip3b_tas_anomalies_yearly.csv   all models x scenarios, long format
@@ -18,6 +19,7 @@ Output (in output/):
 """
 
 import argparse
+import io
 import logging
 import os
 import sys
@@ -29,75 +31,86 @@ from tqdm import tqdm
 import config
 import utils
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-Path(config.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-import io
-_stdout_handler = logging.StreamHandler(io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
-_file_handler  = logging.FileHandler(os.path.join(config.OUTPUT_DIR, "processing.log"),
-                                     mode="w", encoding="utf-8")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[_stdout_handler, _file_handler],
-)
+# ── Logging Setup ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
 
+def setup_logging(output_dir):
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    _stdout_handler = logging.StreamHandler(
+        io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    )
+    _file_handler = logging.FileHandler(
+        os.path.join(output_dir, "processing.log"), mode="w", encoding="utf-8"
+    )
+    # Remove any existing handlers so we don't duplicate logs if called multiple times
+    logging.getLogger().handlers = []
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[_stdout_handler, _file_handler],
+    )
 
-# ── Per-combination processor ─────────────────────────────────────────────────
+
+
+# ── Per-combination processor ──────────────────────────────────────────────────
 
 def process_ssp(model_dir: str, model_name: str, scenario: str,
-                dry_run: bool = False) -> pd.DataFrame | None:
-    """Process one model × SSP scenario. Returns DataFrame or None on failure."""
+                dry_run: bool = False,
+                test_years: tuple[int, int] | None = None,
+                pattern_template: str = "*_{variable}_global_daily_*.nc") -> pd.DataFrame | None:
+    """Process one model x SSP scenario. Returns DataFrame or None on failure."""
     logger.info("[>>] %s / %s", model_dir, scenario)
 
-    hist_files = utils.find_files(config.INPUT_ROOT, "historical", model_dir, config.VARIABLE)
-    scen_files = utils.find_files(config.INPUT_ROOT, scenario,     model_dir, config.VARIABLE)
+    hist_files = utils.find_files(config.INPUT_ROOT, "historical", model_dir, pattern_template, config.VARIABLE)
+    scen_files = utils.find_files(config.INPUT_ROOT, scenario,     model_dir, pattern_template, config.VARIABLE)
 
     if not hist_files:
-        logger.warning("  ✗ No historical files — skipping")
+        logger.warning("  No historical files -- skipping")
         return None
     if not scen_files:
-        logger.warning("  ✗ No %s files — skipping", scenario)
+        logger.warning("  No %s files -- skipping", scenario)
         return None
 
     logger.info("  %d historical + %d %s files", len(hist_files), len(scen_files), scenario)
+    if test_years:
+        logger.info("  TEST MODE: limiting to years %d-%d", *test_years)
     if dry_run:
         return None
 
     try:
-        da = utils.load_hist_plus_scenario(hist_files, scen_files,
-                                           config.VARIABLE, config.CHUNK_DAYS)
-        logger.info("  Computing area-weighted global mean ...")
-        da_gm = utils.area_weighted_global_mean(da)
+        logger.info("  Reading files and computing global mean ...")
+        annual = utils.load_hist_plus_scenario(
+            hist_files, scen_files,
+            variable=config.VARIABLE,
+            test_years=test_years,
+        )
 
-        logger.info("  Resampling to annual means ...")
-        da_ann = utils.annual_mean(da_gm)
+        if annual.empty:
+            logger.warning("  No data loaded -- skipping")
+            return None
 
-        da_anom = utils.compute_anomaly(da_ann, config.REF_START, config.REF_END)
-        logger.info("  Triggering dask computation ...")
-        da_anom = da_anom.compute()
+        logger.info("  Computing anomaly (ref: %d-%d) ...", config.REF_START, config.REF_END)
+        anomaly = utils.compute_anomaly(annual, config.REF_START, config.REF_END)
 
-        df = utils.to_dataframe(da_anom, model_name, scenario)
-        logger.info("  ✓ %d years (%d–%d)", len(df), df.year.min(), df.year.max())
+        df = utils.to_dataframe(anomaly, model_name, scenario, hist_end=config.HIST_END)
+        logger.info("  Done: %d years (%d-%d)", len(df), df.year.min(), df.year.max())
         return df
 
     except Exception as exc:
-        logger.error("  ✗ Failed: %s", exc, exc_info=True)
+        logger.error("  Failed: %s", exc, exc_info=True)
         return None
 
 
 def process_picontrol(model_dir: str, model_name: str,
-                      dry_run: bool = False) -> pd.DataFrame | None:
-    """
-    Process piControl run.
-    Anomaly is relative to the piControl's own full-period mean — this
-    quantifies model drift and should be near-zero for a stable control run.
-    """
+                      dry_run: bool = False,
+                      test_years: tuple[int, int] | None = None,
+                      pattern_template: str = "*_{variable}_global_daily_*.nc") -> pd.DataFrame | None:
+    """Process piControl. Anomaly vs. piControl own mean (drift check)."""
     logger.info("[>>] %s / piControl", model_dir)
 
-    files = utils.find_files(config.INPUT_ROOT, "piControl", model_dir, config.VARIABLE)
+    files = utils.find_files(config.INPUT_ROOT, "piControl", model_dir, pattern_template, config.VARIABLE)
     if not files:
-        logger.warning("  ✗ No piControl files — skipping")
+        logger.warning("  No piControl files -- skipping")
         return None
 
     logger.info("  %d piControl files", len(files))
@@ -105,62 +118,83 @@ def process_picontrol(model_dir: str, model_name: str,
         return None
 
     try:
-        da = utils.load_scenario_only(files, config.VARIABLE, config.CHUNK_DAYS)
-        da_gm  = utils.area_weighted_global_mean(da)
-        da_ann = utils.annual_mean(da_gm)
+        annual = utils.load_scenario_only(
+            files, variable=config.VARIABLE, test_years=test_years
+        )
+        if annual.empty:
+            return None
 
-        # Anomaly relative to piControl own mean (drift check)
-        pic_mean = da_ann.mean("year")
-        da_anom  = (da_ann - pic_mean).compute()
-        da_anom.attrs.update({
-            "units": "K",
-            "reference_period": "piControl_full_period_mean",
-            "long_name": "Annual global-mean temperature anomaly (drift check)"
-        })
+        # Anomaly vs. full-period mean (drift check)
+        pic_mean = annual.mean()
+        anomaly  = annual - pic_mean
 
-        df = utils.to_dataframe(da_anom, model_name, "piControl")
-        logger.info("  ✓ %d years", len(df))
+        df = utils.to_dataframe(anomaly, model_name, "piControl", hist_end=config.HIST_END)
+        logger.info("  Done: %d years", len(df))
         return df
 
     except Exception as exc:
-        logger.error("  ✗ Failed: %s", exc, exc_info=True)
+        logger.error("  Failed: %s", exc, exc_info=True)
         return None
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main(dry_run: bool = False):
+def main(dry_run: bool = False, test: bool = False, region: str = "global"):
+    
+    if region == "eu":
+        config.INPUT_ROOT = config.INPUT_ROOT_EU
+        config.OUTPUT_DIR = os.path.join(config.PROJECT_ROOT, "output", "EU")
+        pattern_template  = "*_{variable}_europe_monthly_mean.nc"
+    else:
+        config.INPUT_ROOT = config.INPUT_ROOT_GLOBAL
+        config.OUTPUT_DIR = os.path.join(config.PROJECT_ROOT, "output", "global")
+        pattern_template  = "*_{variable}_global_daily_*.nc"
+
+    config.OUTPUT_BY_MODEL = os.path.join(config.OUTPUT_DIR, "by_model")
+    
+    setup_logging(config.OUTPUT_DIR)
     Path(config.OUTPUT_BY_MODEL).mkdir(parents=True, exist_ok=True)
+
+    # Mode selection
+    test_years = (1850, 1910) if test else None
+    models     = dict(list(config.MODELS.items())[:1]) if test else config.MODELS
+    scenarios  = [config.SCENARIOS[0]]                 if test else config.SCENARIOS
 
     logger.info("=" * 60)
     logger.info("ISIMIP3b Temperature Anomalies")
-    logger.info("Reference period : %d–%d", config.REF_START, config.REF_END)
-    logger.info("Models           : %s", list(config.MODELS.keys()))
-    logger.info("Scenarios        : %s", config.SCENARIOS)
-    logger.info("piControl        : %s", config.INCLUDE_PICONTROL)
+    logger.info("Region           : %s", region.upper())
+    logger.info("Input Root       : %s", config.INPUT_ROOT)
+    logger.info("Output Dir       : %s", config.OUTPUT_DIR)
+    logger.info("Reference period : %d-%d", config.REF_START, config.REF_END)
+    logger.info("Models           : %s", list(models.keys()))
+    logger.info("Scenarios        : %s", scenarios)
+    logger.info("piControl        : %s", config.INCLUDE_PICONTROL and not test)
+    logger.info("Test mode        : %s%s",
+                test, f"  (years {test_years[0]}-{test_years[1]})" if test else "")
     logger.info("Dry run          : %s", dry_run)
     logger.info("=" * 60)
 
     all_dfs = []
 
-    # SSP scenarios (historical + future concatenated)
     combos = [(md, mn, sc)
-              for md, mn in config.MODELS.items()
-              for sc in config.SCENARIOS]
+              for md, mn in models.items()
+              for sc in scenarios]
 
     for model_dir, model_name, scenario in tqdm(combos, desc="SSP combinations"):
-        df = process_ssp(model_dir, model_name, scenario, dry_run)
+        df = process_ssp(model_dir, model_name, scenario,
+                         dry_run=dry_run, test_years=test_years, pattern_template=pattern_template)
         if df is not None:
             all_dfs.append(df)
             out = os.path.join(config.OUTPUT_BY_MODEL,
                                f"{model_name}_{scenario}_anomalies.csv")
             df.to_csv(out, index=False)
-            logger.info("  → Saved %s", out)
+            logger.info("  Saved -> %s", out)
 
-    # piControl (optional, drift assessment)
-    if config.INCLUDE_PICONTROL:
-        for model_dir, model_name in tqdm(config.MODELS.items(), desc="piControl"):
-            df = process_picontrol(model_dir, model_name, dry_run)
+    # piControl (skip in test mode for speed)
+    if config.INCLUDE_PICONTROL and not test:
+        for model_dir, model_name in tqdm(models.items(), desc="piControl"):
+            df = process_picontrol(model_dir, model_name,
+                                   dry_run=dry_run, test_years=test_years, pattern_template=pattern_template)
             if df is not None:
                 all_dfs.append(df)
                 out = os.path.join(config.OUTPUT_BY_MODEL,
@@ -168,38 +202,56 @@ def main(dry_run: bool = False):
                 df.to_csv(out, index=False)
 
     if dry_run:
-        logger.info("Dry-run complete — no output written.")
+        logger.info("Dry-run complete -- no output written.")
         return
 
     if not all_dfs:
         logger.error("No results produced. Check INPUT_ROOT and model/scenario names.")
         sys.exit(1)
 
-    # Combined CSV (all models × scenarios)
+    # Combined CSV
     combined = pd.concat(all_dfs, ignore_index=True)
-    out_all = os.path.join(config.OUTPUT_DIR, "isimip3b_tas_anomalies_yearly.csv")
+    suffix   = "_TEST" if test else ""
+    out_all  = os.path.join(config.OUTPUT_DIR,
+                             f"isimip3b_tas_anomalies_yearly{suffix}.csv")
     combined.to_csv(out_all, index=False)
-    logger.info("Saved combined CSV → %s", out_all)
+    logger.info("Saved combined CSV -> %s", out_all)
 
-    # Multi-model mean per scenario per year (SSP scenarios only)
+    # Multi-model mean (SSP scenarios only, not needed for single-model test)
     ssp_data = combined[combined.scenario.isin(config.SCENARIOS)]
-    mmm = (
-        ssp_data
-        .groupby(["scenario", "year"])["tas_anomaly_K"]
-        .agg(n_models="count", mmm_K="mean", std_K="std")
-        .reset_index()
-    )
-    out_mmm = os.path.join(config.OUTPUT_DIR, "isimip3b_tas_mmm_yearly.csv")
-    mmm.to_csv(out_mmm, index=False)
-    logger.info("Saved multi-model mean CSV → %s", out_mmm)
+    if not ssp_data.empty:
+        mmm = (
+            ssp_data
+            .groupby(["scenario", "year"])["tas_anomaly_K"]
+            .agg(n_models="count", mmm_K="mean", std_K="std")
+            .reset_index()
+        )
+        out_mmm = os.path.join(config.OUTPUT_DIR,
+                               f"isimip3b_tas_mmm_yearly{suffix}.csv")
+        mmm.to_csv(out_mmm, index=False)
+        logger.info("Saved MMM CSV -> %s", out_mmm)
 
-    logger.info("✓ All done!")
-    return combined, mmm
+    # Sanity print in test mode
+    if test:
+        logger.info("\n--- TEST RESULTS ---")
+        logger.info("\n%s", combined.to_string(index=False))
+        logger.info("\nMean anomaly over test period: %.4f K",
+                    combined["tas_anomaly_K"].mean())
+        logger.info("(Expected: values near ~0.2-0.4 K for 1960-1969 vs 1850-1900)")
+
+    logger.info("All done!")
+    return combined
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Compute ISIMIP3b yearly temperature anomalies")
+    parser = argparse.ArgumentParser(
+        description="Compute ISIMIP3b yearly temperature anomalies"
+    )
+    parser.add_argument("--region", choices=["global", "eu"], default="global",
+                        help="Region to process: 'global' (daily data) or 'eu' (monthly data)")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Discover files and report counts, but skip computation")
+                        help="Discover files only, no computation")
+    parser.add_argument("--test", action="store_true",
+                        help="Quick test: 1 model, 1 scenario, 10 years")
     args = parser.parse_args()
-    main(dry_run=args.dry_run)
+    main(dry_run=args.dry_run, test=args.test, region=args.region)

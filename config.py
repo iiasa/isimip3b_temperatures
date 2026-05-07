@@ -8,12 +8,12 @@ Edit this file to adapt to a different data location or to add new models.
 import os
 
 # ── Input data ────────────────────────────────────────────────────────────────
-INPUT_ROOT = r"//pdrive/share/link/nakhavali.pdrv/watxene/ISIMIP/ISIMIP3b/InputData/climate_updated/bias-adjusted"
+INPUT_ROOT_GLOBAL = r"//pdrive/share/link/nakhavali.pdrv/watxene/ISIMIP/ISIMIP3b/InputData/climate_updated/bias-adjusted"
+INPUT_ROOT_EU     = r"P:\bnr\02_Data\ISIMIP3b_monthly"
 
 # ── Output ────────────────────────────────────────────────────────────────────
-PROJECT_ROOT    = os.path.dirname(os.path.abspath(__file__))
-OUTPUT_DIR      = os.path.join(PROJECT_ROOT, "output")
-OUTPUT_BY_MODEL = os.path.join(OUTPUT_DIR, "by_model")
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+# OUTPUT_DIR is now determined dynamically in the main script based on the region.
 
 # ── Models ────────────────────────────────────────────────────────────────────
 # Keys   = directory names on pdrive (case-sensitive)
