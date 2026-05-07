@@ -1,5 +1,10 @@
-output/
+# System & Temp files
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.log
+
+# Data Outputs
+# We ignore the heavy Global daily outputs, but include the fast EU monthly results
+output/global/
+!output/EU/

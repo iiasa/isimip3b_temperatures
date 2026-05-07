@@ -58,6 +58,18 @@ output/
 | `experiment_part` | `historical` (<=2014), `future` (>2014), or `piControl` |
 | `tas_anomaly_K` | Annual temperature anomaly [K] vs 1850–1900 |
 
+## Visualizations (EU Region)
+
+### 1. Model Comparison & Uncertainty
+Boxplots showing the model spread across different time horizons (2030, 2050, 2100). Individual points represent specific models.
+
+![Model Comparison](output/EU/isimip3b_tas_comparison_boxplots_eu.png)
+
+### 2. Scenario Pathways
+Yearly temperature anomalies per SSP scenario (Spaghetti lines = individual models; Bold line = Multi-model mean ± 1σ).
+
+![Scenario Pathways](output/EU/isimip3b_tas_anomalies_4panel_eu.png)
+
 ## Usage
 
 ```bash
