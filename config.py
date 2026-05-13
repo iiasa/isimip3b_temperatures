@@ -6,10 +6,16 @@ Edit this file to adapt to a different data location or to add new models.
 """
 
 import os
+import platform
 
 # ── Input data ────────────────────────────────────────────────────────────────
-INPUT_ROOT_GLOBAL = r"//pdrive/share/link/nakhavali.pdrv/watxene/ISIMIP/ISIMIP3b/InputData/climate_updated/bias-adjusted"
-INPUT_ROOT_EU     = r"P:\bnr\02_Data\ISIMIP3b_monthly"
+if platform.system() == "Windows":
+    INPUT_ROOT_GLOBAL = r"//pdrive/share/link/nakhavali.pdrv/watxene/ISIMIP/ISIMIP3b/InputData/climate_updated/bias-adjusted"
+    INPUT_ROOT_EU     = r"P:\bnr\02_Data\ISIMIP3b_monthly"
+else:
+    # LINUX PATHS: Update these to match your VM's mount points (e.g., /p/ or /mnt/p/)
+    INPUT_ROOT_GLOBAL = "/p/share/link/nakhavali.pdrv/watxene/ISIMIP/ISIMIP3b/InputData/climate_updated/bias-adjusted"
+    INPUT_ROOT_EU     = "/p/bnr/02_Data/ISIMIP3b_monthly"
 
 # ── Output ────────────────────────────────────────────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))

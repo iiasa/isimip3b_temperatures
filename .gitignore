@@ -6,5 +6,5 @@ __pycache__/
 
 # Data Outputs
 # We ignore the heavy Global daily outputs, but include the fast EU monthly results
-output/global/
+!output/global/
 !output/EU/

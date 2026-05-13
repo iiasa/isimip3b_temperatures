@@ -40,7 +40,7 @@ def _process_single_file_raw(fpath, variable, weights):
         
     return pd.Series(gm, index=pd.DatetimeIndex([str(t) for t in times]))
 
-def _files_to_annual_gmean(files, variable, test_years=None):
+def _files_to_annual_gmean(files, variable, test_years=None, n_workers=4):
     if test_years:
         files = _filter_files_by_years(files, *test_years)
         if not files: return pd.Series(dtype=float)
@@ -52,7 +52,6 @@ def _files_to_annual_gmean(files, variable, test_years=None):
         weights = weights / weights.sum()
 
     all_series = []
-    n_workers = 4
     logger.info(f"  Processing {len(files)} files in parallel ({n_workers} workers, raw netCDF4 mode)...")
     
     with concurrent.futures.ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -91,11 +90,11 @@ def _filter_files_by_years(files, y_start, y_end):
         except: kept.append(f)
     return kept
 
-def load_hist_plus_scenario(hist_files, scen_files, variable, test_years=None, **kwargs):
-    return _files_to_annual_gmean(hist_files + scen_files, variable, test_years)
+def load_hist_plus_scenario(hist_files, scen_files, variable, test_years=None, n_workers=4, **kwargs):
+    return _files_to_annual_gmean(hist_files + scen_files, variable, test_years, n_workers=n_workers)
 
-def load_scenario_only(files, variable, test_years=None, **kwargs):
-    return _files_to_annual_gmean(files, variable, test_years)
+def load_scenario_only(files, variable, test_years=None, n_workers=4, **kwargs):
+    return _files_to_annual_gmean(files, variable, test_years, n_workers=n_workers)
 
 def compute_anomaly(annual, ref_start, ref_end):
     ref_mask = (annual.index >= ref_start) & (annual.index <= ref_end)

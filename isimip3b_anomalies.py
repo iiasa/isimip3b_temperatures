@@ -57,7 +57,8 @@ def setup_logging(output_dir):
 def process_ssp(model_dir: str, model_name: str, scenario: str,
                 dry_run: bool = False,
                 test_years: tuple[int, int] | None = None,
-                pattern_template: str = "*_{variable}_global_daily_*.nc") -> pd.DataFrame | None:
+                pattern_template: str = "*_{variable}_global_daily_*.nc",
+                workers: int = 4) -> pd.DataFrame | None:
     """Process one model x SSP scenario. Returns DataFrame or None on failure."""
     logger.info("[>>] %s / %s", model_dir, scenario)
 
@@ -83,6 +84,7 @@ def process_ssp(model_dir: str, model_name: str, scenario: str,
             hist_files, scen_files,
             variable=config.VARIABLE,
             test_years=test_years,
+            n_workers=workers
         )
 
         if annual.empty:
@@ -104,7 +106,8 @@ def process_ssp(model_dir: str, model_name: str, scenario: str,
 def process_picontrol(model_dir: str, model_name: str,
                       dry_run: bool = False,
                       test_years: tuple[int, int] | None = None,
-                      pattern_template: str = "*_{variable}_global_daily_*.nc") -> pd.DataFrame | None:
+                      pattern_template: str = "*_{variable}_global_daily_*.nc",
+                      workers: int = 4) -> pd.DataFrame | None:
     """Process piControl. Anomaly vs. piControl own mean (drift check)."""
     logger.info("[>>] %s / piControl", model_dir)
 
@@ -119,7 +122,7 @@ def process_picontrol(model_dir: str, model_name: str,
 
     try:
         annual = utils.load_scenario_only(
-            files, variable=config.VARIABLE, test_years=test_years
+            files, variable=config.VARIABLE, test_years=test_years, n_workers=workers
         )
         if annual.empty:
             return None
@@ -139,7 +142,7 @@ def process_picontrol(model_dir: str, model_name: str,
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
-def main(dry_run: bool = False, test: bool = False, region: str = "global"):
+def main(dry_run: bool = False, test: bool = False, region: str = "global", scenario_name: str = None, model_name_filter: str = None, model_name_exclude: str = None, workers: int = 4):
     
     if region == "eu":
         config.INPUT_ROOT = config.INPUT_ROOT_EU
@@ -157,8 +160,27 @@ def main(dry_run: bool = False, test: bool = False, region: str = "global"):
 
     # Mode selection
     test_years = (1850, 1910) if test else None
-    models     = dict(list(config.MODELS.items())[:1]) if test else config.MODELS
-    scenarios  = [config.SCENARIOS[0]]                 if test else config.SCENARIOS
+    
+    if test:
+        models = dict(list(config.MODELS.items())[:1])
+    elif model_name_filter:
+        # Support comma-separated lists
+        filter_list = [m.strip().lower() for m in model_name_filter.split(",")]
+        models = {k: v for k, v in config.MODELS.items() 
+                  if v.lower() in filter_list or k.lower() in filter_list}
+    else:
+        models = config.MODELS
+        
+    if model_name_exclude:
+        exclude_list = [m.strip().lower() for m in model_name_exclude.split(",")]
+        models = {k: v for k, v in models.items() 
+                  if v.lower() not in exclude_list and k.lower() not in exclude_list}
+    
+    if scenario_name:
+        # Support comma-separated lists
+        scenarios = [s.strip() for s in scenario_name.split(",")]
+    else:
+        scenarios = [config.SCENARIOS[0]] if test else config.SCENARIOS
 
     logger.info("=" * 60)
     logger.info("ISIMIP3b Temperature Anomalies")
@@ -182,7 +204,8 @@ def main(dry_run: bool = False, test: bool = False, region: str = "global"):
 
     for model_dir, model_name, scenario in tqdm(combos, desc="SSP combinations"):
         df = process_ssp(model_dir, model_name, scenario,
-                         dry_run=dry_run, test_years=test_years, pattern_template=pattern_template)
+                         dry_run=dry_run, test_years=test_years, 
+                         pattern_template=pattern_template, workers=workers)
         if df is not None:
             all_dfs.append(df)
             out = os.path.join(config.OUTPUT_BY_MODEL,
@@ -194,7 +217,8 @@ def main(dry_run: bool = False, test: bool = False, region: str = "global"):
     if config.INCLUDE_PICONTROL and not test:
         for model_dir, model_name in tqdm(models.items(), desc="piControl"):
             df = process_picontrol(model_dir, model_name,
-                                   dry_run=dry_run, test_years=test_years, pattern_template=pattern_template)
+                                   dry_run=dry_run, test_years=test_years, 
+                                   pattern_template=pattern_template, workers=workers)
             if df is not None:
                 all_dfs.append(df)
                 out = os.path.join(config.OUTPUT_BY_MODEL,
@@ -249,9 +273,19 @@ if __name__ == "__main__":
     )
     parser.add_argument("--region", choices=["global", "eu"], default="global",
                         help="Region to process: 'global' (daily data) or 'eu' (monthly data)")
+    parser.add_argument("--scenario", type=str, default=None,
+                        help="Scenario(s) to process (e.g. ssp126,ssp585).")
+    parser.add_argument("--model", type=str, default=None,
+                        help="Model(s) to process (e.g. gfdl-esm4,ukesm1-0-ll).")
+    parser.add_argument("--exclude-model", type=str, default=None,
+                        help="Model(s) to skip.")
+    parser.add_argument("--workers", type=int, default=4,
+                        help="Number of parallel workers (reduce if running out of memory).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Discover files only, no computation")
     parser.add_argument("--test", action="store_true",
                         help="Quick test: 1 model, 1 scenario, 10 years")
     args = parser.parse_args()
-    main(dry_run=args.dry_run, test=args.test, region=args.region)
+    main(dry_run=args.dry_run, test=args.test, region=args.region, 
+         scenario_name=args.scenario, model_name_filter=args.model, 
+         model_name_exclude=args.exclude_model, workers=args.workers)
